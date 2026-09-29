@@ -65,7 +65,7 @@
   .pad .pn{ font-size:14px; font-weight:800; }
   .pad .pk{ font-size:11px; color:#64748b; font-weight:600; margin-top:2px; }
   /* recorder */
-  .recbar{ display:flex; align-items:center; gap:8px; }
+  .recbar{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
   .rbtn{
     border:1px solid #e5eaf1; background:#fff; border-radius:12px;
     padding:10px 14px; font-size:14px; font-weight:700; cursor:pointer; color:#0f1e33;
@@ -112,6 +112,8 @@
     <button class="rbtn" id="recBtn"><span class="dot" id="recDot" hidden></span><span id="recLabel">Record</span></button>
     <button class="rbtn" id="playBtn" disabled>Play</button>
     <button class="rbtn" id="clearBtn" disabled>Clear</button>
+    <button class="rbtn" id="tuneBtn">Surprise me</button>
+    <button class="rbtn" id="stopBtn" disabled>Stop</button>
     <span id="recStatus"></span>
   </div>
 
@@ -237,6 +239,49 @@ const AU = (() => {
 })();
 
 const freqOf = m => 440 * Math.pow(2, (m - 69) / 12);
+const keyMap = {};
+
+/* ================= playback engine (cancellable) ================= */
+const Player = {
+  timers: [], playing: false, label: '',
+  clear(){ this.timers.forEach(clearTimeout); this.timers = []; },
+  play(evs, label){
+    this.stop();
+    if (!evs.length) return;
+    this.playing = true;
+    this.label = label || 'Playing…';
+    evs.forEach(ev => this.timers.push(setTimeout(() => {
+      if (ev.kind === 'piano'){ AU.piano(freqOf(ev.id)); flashKey(ev.id); }
+      else DRUMS[ev.id].fn();
+    }, ev.t)));
+    const last = evs[evs.length - 1].t;
+    this.timers.push(setTimeout(() => this.finish(), last + 700));
+    syncRecUI();
+  },
+  finish(){
+    this.playing = false; this.label = ''; this.clear();
+    syncRecUI();
+  },
+  stop(){
+    if (!this.playing) return;
+    this.playing = false; this.label = ''; this.clear();
+    flashedKeys.splice(0).forEach(k => k.classList.remove('active'));
+    syncRecUI();
+  }
+};
+
+const flashedKeys = [];
+function flashKey(m){
+  const k = keyMap[m];
+  if (!k) return;
+  k.classList.add('active');
+  flashedKeys.push(k);
+  setTimeout(() => {
+    k.classList.remove('active');
+    const i = flashedKeys.indexOf(k);
+    if (i >= 0) flashedKeys.splice(i, 1);
+  }, 240);
+}
 
 /* ================= recorder ================= */
 const REC = {
@@ -252,14 +297,9 @@ const REC = {
     this.evs.push({ t, kind, id });
   },
   play(){
-    if (!this.evs.length || this.playing) return;
-    this.playing = true; syncRecUI();
-    const done = () => { this.playing = false; syncRecUI(); };
-    this.evs.forEach(ev => setTimeout(() => playSound(ev.kind, ev.id, true), ev.t));
-    const last = this.evs[this.evs.length - 1].t;
-    setTimeout(done, last + 600);
+    if (!this.evs.length || Player.playing) return;
+    Player.play(this.evs.slice(), 'Playing your recording…');
   },
-  playing: false,
 };
 
 function playSound(kind, id, fromPlayback){
@@ -280,6 +320,7 @@ const NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
     const key = document.createElement('div');
     key.className = isBlack ? 'bkey' : 'wkey';
     key.dataset.midi = m;
+    keyMap[m] = key;
     if (!isBlack){
       const wi = whites.length;
       key.innerHTML = '<span>' + name + '</span>' + (name === 'C' ? '<span class="c-dot"></span>' : '');
@@ -336,6 +377,42 @@ const DRUMS = [
   });
 })();
 
+/* ================= random tune composer ================= */
+function randomTune(){
+  AU.unlock();
+  if (Player.playing || REC.on) return;
+  // pick a random pentatonic scale and root so it always sounds good
+  const scale = Math.random() < 0.5 ? [0, 2, 4, 7, 9] : [0, 3, 5, 7, 10];
+  const root = 60 + [0, 2, 4, 5, 7][(Math.random() * 5) | 0];
+  const notes = [];
+  for (let oct = 0; oct < 2; oct++)
+    scale.forEach(s => { const m = root + s + oct * 12; if (m <= 83) notes.push(m); });
+  const beat = 280;
+  const rhythms = [0.5, 0.5, 1, 0.5, 1, 1.5, 0.5, 2];
+  const evs = [];
+  let t = 200;
+  let deg = (notes.length / 2) | 0;
+  const count = 14 + ((Math.random() * 8) | 0);
+  for (let i = 0; i < count; i++){
+    deg += [-2, -1, -1, 1, 1, 2, 0][(Math.random() * 7) | 0];
+    deg = Math.max(0, Math.min(notes.length - 1, deg));
+    evs.push({ t, kind: 'piano', id: notes[deg] });
+    if (Math.random() < 0.18 && notes[deg] + 12 <= 83) evs.push({ t, kind: 'piano', id: notes[deg] + 12 });
+    t += rhythms[(Math.random() * rhythms.length) | 0] * beat;
+  }
+  // simple beat under it: kick on 1 and 3, snare on 2 and 4, hats on eighths
+  const total = t + beat;
+  for (let b = 0; (200 + b * beat) < total; b++){
+    const bt = 200 + b * beat;
+    if (b % 4 === 0 || b % 4 === 2) evs.push({ t: bt, kind: 'drum', id: 0 });
+    if (b % 4 === 1 || b % 4 === 3) evs.push({ t: bt, kind: 'drum', id: 1 });
+    evs.push({ t: bt, kind: 'drum', id: 2 });
+    evs.push({ t: bt + beat / 2, kind: 'drum', id: 2 });
+  }
+  evs.sort((a, b) => a.t - b.t);
+  Player.play(evs, 'Playing a random tune…');
+}
+
 /* ================= tabs ================= */
 const tabPiano = document.getElementById('tabPiano');
 const tabDrums = document.getElementById('tabDrums');
@@ -362,6 +439,8 @@ document.getElementById('vol').addEventListener('input', (e) => {
 const recBtn = document.getElementById('recBtn');
 const playBtn = document.getElementById('playBtn');
 const clearBtn = document.getElementById('clearBtn');
+const tuneBtn = document.getElementById('tuneBtn');
+const stopBtn = document.getElementById('stopBtn');
 const recStatus = document.getElementById('recStatus');
 const recDot = document.getElementById('recDot');
 const recLabel = document.getElementById('recLabel');
@@ -370,13 +449,17 @@ function fmt(ms){
   return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
 }
 function syncRecUI(){
+  const playing = Player.playing;
+  recBtn.disabled = playing;
   recBtn.classList.toggle('recording', REC.on);
   recDot.hidden = !REC.on;
   recDot.classList.toggle('blink', REC.on);
   recLabel.textContent = REC.on ? 'Stop' : 'Record';
-  playBtn.disabled = REC.on || REC.playing || REC.evs.length === 0;
-  clearBtn.disabled = REC.on || REC.playing || REC.evs.length === 0;
-  if (REC.playing) recStatus.textContent = 'Playing…';
+  playBtn.disabled = REC.on || playing || REC.evs.length === 0;
+  clearBtn.disabled = REC.on || playing || REC.evs.length === 0;
+  tuneBtn.disabled = REC.on || playing;
+  stopBtn.disabled = !playing;
+  if (playing) recStatus.textContent = Player.label;
   else if (REC.on) recStatus.textContent = 'Recording… tap Stop when done';
   else if (REC.evs.length) recStatus.textContent = REC.evs.length + ' notes · ' + fmt(REC.evs[REC.evs.length - 1].t);
   else recStatus.textContent = '';
@@ -393,6 +476,8 @@ recBtn.addEventListener('click', () => {
 });
 playBtn.addEventListener('click', () => { AU.unlock(); REC.play(); });
 clearBtn.addEventListener('click', () => { REC.evs = []; syncRecUI(); });
+tuneBtn.addEventListener('click', randomTune);
+stopBtn.addEventListener('click', () => Player.stop());
 syncRecUI();
 
 /* ================= service worker ================= */
