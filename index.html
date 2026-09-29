@@ -53,6 +53,11 @@
     box-shadow:0 4px 8px rgba(15,30,51,.25);
   }
   .bkey.active{ background:linear-gradient(#6366f1,#4338ca); }
+  .wkey.hint{ background:#e0e7ff; animation:hintPulse 1.1s infinite; }
+  .bkey.hint{ background:linear-gradient(#6366f1,#4338ca); animation:hintPulse 1.1s infinite; }
+  @keyframes hintPulse{ 0%,100%{ box-shadow:0 0 0 0 rgba(99,102,241,.55);} 50%{ box-shadow:0 0 0 12px rgba(99,102,241,0);} }
+  .wkey.wrong{ background:#fecaca; }
+  .bkey.wrong{ background:#ef4444; }
   /* drums */
   #drumGrid{ display:grid; grid-template-columns:repeat(4,1fr); gap:10px; touch-action:none; }
   .pad{
@@ -112,7 +117,7 @@
     <button class="rbtn" id="recBtn"><span class="dot" id="recDot" hidden></span><span id="recLabel">Record</span></button>
     <button class="rbtn" id="playBtn" disabled>Play</button>
     <button class="rbtn" id="clearBtn" disabled>Clear</button>
-    <button class="rbtn" id="tuneBtn">Surprise me</button>
+    <button class="rbtn" id="guideBtn">Guide me</button>
     <button class="rbtn" id="stopBtn" disabled>Stop</button>
     <span id="recStatus"></span>
   </div>
@@ -336,6 +341,7 @@ const NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
       if (e) e.preventDefault();
       AU.unlock();
       playSound('piano', m);
+      Guide.press(m);
       key.classList.add('active');
     };
     const release = () => key.classList.remove('active');
@@ -377,41 +383,64 @@ const DRUMS = [
   });
 })();
 
-/* ================= random tune composer ================= */
-function randomTune(){
-  AU.unlock();
-  if (Player.playing || REC.on) return;
-  // pick a random pentatonic scale and root so it always sounds good
-  const scale = Math.random() < 0.5 ? [0, 2, 4, 7, 9] : [0, 3, 5, 7, 10];
-  const root = 60 + [0, 2, 4, 5, 7][(Math.random() * 5) | 0];
-  const notes = [];
-  for (let oct = 0; oct < 2; oct++)
-    scale.forEach(s => { const m = root + s + oct * 12; if (m <= 83) notes.push(m); });
-  const beat = 280;
-  const rhythms = [0.5, 0.5, 1, 0.5, 1, 1.5, 0.5, 2];
-  const evs = [];
-  let t = 200;
-  let deg = (notes.length / 2) | 0;
-  const count = 14 + ((Math.random() * 8) | 0);
-  for (let i = 0; i < count; i++){
-    deg += [-2, -1, -1, 1, 1, 2, 0][(Math.random() * 7) | 0];
-    deg = Math.max(0, Math.min(notes.length - 1, deg));
-    evs.push({ t, kind: 'piano', id: notes[deg] });
-    if (Math.random() < 0.18 && notes[deg] + 12 <= 83) evs.push({ t, kind: 'piano', id: notes[deg] + 12 });
-    t += rhythms[(Math.random() * rhythms.length) | 0] * beat;
+/* ================= guide mode: hints so you play the tune yourself ================= */
+const Guide = {
+  active: false, notes: [], idx: 0, message: '',
+  start(){
+    if (Player.playing || REC.on || this.active) return;
+    AU.unlock();
+    this.message = '';
+    // compose a random pleasant melody (pentatonic, always sounds good)
+    const scale = Math.random() < 0.5 ? [0, 2, 4, 7, 9] : [0, 3, 5, 7, 10];
+    const root = 60 + [0, 2, 4, 5, 7][(Math.random() * 5) | 0];
+    const pool = [];
+    for (let oct = 0; oct < 2; oct++)
+      scale.forEach(s => { const m = root + s + oct * 12; if (m <= 83) pool.push(m); });
+    let deg = (pool.length / 2) | 0;
+    this.notes = [];
+    const count = 8 + ((Math.random() * 5) | 0);
+    for (let i = 0; i < count; i++){
+      deg += [-2, -1, -1, 1, 1, 2, 0][(Math.random() * 7) | 0];
+      deg = Math.max(0, Math.min(pool.length - 1, deg));
+      this.notes.push(pool[deg]);
+    }
+    this.idx = 0;
+    this.active = true;
+    this.highlight();
+    syncRecUI();
+  },
+  highlight(){
+    Object.values(keyMap).forEach(k => k.classList.remove('hint'));
+    const k = keyMap[this.notes[this.idx]];
+    if (k) k.classList.add('hint');
+  },
+  press(m){
+    if (!this.active) return;
+    if (m === this.notes[this.idx]){
+      this.idx++;
+      if (this.idx >= this.notes.length){
+        this.stop();
+        this.message = 'Well played! Tap Guide me for a new tune.';
+        [72, 76, 79, 84].forEach((mm, i) => setTimeout(() => AU.piano(freqOf(mm)), i * 90));
+        syncRecUI();
+      } else {
+        this.highlight();
+        syncRecUI();
+      }
+    } else {
+      const k = keyMap[m];
+      if (k){
+        k.classList.add('wrong');
+        setTimeout(() => k.classList.remove('wrong'), 220);
+      }
+    }
+  },
+  stop(){
+    this.active = false; this.notes = []; this.idx = 0; this.message = '';
+    Object.values(keyMap).forEach(k => k.classList.remove('hint'));
+    syncRecUI();
   }
-  // simple beat under it: kick on 1 and 3, snare on 2 and 4, hats on eighths
-  const total = t + beat;
-  for (let b = 0; (200 + b * beat) < total; b++){
-    const bt = 200 + b * beat;
-    if (b % 4 === 0 || b % 4 === 2) evs.push({ t: bt, kind: 'drum', id: 0 });
-    if (b % 4 === 1 || b % 4 === 3) evs.push({ t: bt, kind: 'drum', id: 1 });
-    evs.push({ t: bt, kind: 'drum', id: 2 });
-    evs.push({ t: bt + beat / 2, kind: 'drum', id: 2 });
-  }
-  evs.sort((a, b) => a.t - b.t);
-  Player.play(evs, 'Playing a random tune…');
-}
+};
 
 /* ================= tabs ================= */
 const tabPiano = document.getElementById('tabPiano');
@@ -439,7 +468,7 @@ document.getElementById('vol').addEventListener('input', (e) => {
 const recBtn = document.getElementById('recBtn');
 const playBtn = document.getElementById('playBtn');
 const clearBtn = document.getElementById('clearBtn');
-const tuneBtn = document.getElementById('tuneBtn');
+const guideBtn = document.getElementById('guideBtn');
 const stopBtn = document.getElementById('stopBtn');
 const recStatus = document.getElementById('recStatus');
 const recDot = document.getElementById('recDot');
@@ -450,17 +479,20 @@ function fmt(ms){
 }
 function syncRecUI(){
   const playing = Player.playing;
-  recBtn.disabled = playing;
+  const guiding = Guide.active;
+  recBtn.disabled = playing || guiding;
   recBtn.classList.toggle('recording', REC.on);
   recDot.hidden = !REC.on;
   recDot.classList.toggle('blink', REC.on);
   recLabel.textContent = REC.on ? 'Stop' : 'Record';
-  playBtn.disabled = REC.on || playing || REC.evs.length === 0;
-  clearBtn.disabled = REC.on || playing || REC.evs.length === 0;
-  tuneBtn.disabled = REC.on || playing;
-  stopBtn.disabled = !playing;
-  if (playing) recStatus.textContent = Player.label;
+  playBtn.disabled = REC.on || playing || guiding || REC.evs.length === 0;
+  clearBtn.disabled = REC.on || playing || guiding || REC.evs.length === 0;
+  guideBtn.disabled = REC.on || playing || guiding;
+  stopBtn.disabled = !playing && !guiding;
+  if (guiding) recStatus.textContent = 'Tap the glowing key · ' + (Guide.idx + 1) + '/' + Guide.notes.length;
+  else if (playing) recStatus.textContent = Player.label;
   else if (REC.on) recStatus.textContent = 'Recording… tap Stop when done';
+  else if (Guide.message) recStatus.textContent = Guide.message;
   else if (REC.evs.length) recStatus.textContent = REC.evs.length + ' notes · ' + fmt(REC.evs[REC.evs.length - 1].t);
   else recStatus.textContent = '';
   if (REC.on && !REC.timer){
@@ -471,14 +503,18 @@ function syncRecUI(){
 }
 recBtn.addEventListener('click', () => {
   AU.unlock();
+  Guide.message = '';
   if (REC.on){ REC.stop(); } else { REC.start(); }
   syncRecUI();
 });
-playBtn.addEventListener('click', () => { AU.unlock(); REC.play(); });
+playBtn.addEventListener('click', () => { AU.unlock(); Guide.message = ''; REC.play(); });
 clearBtn.addEventListener('click', () => { REC.evs = []; syncRecUI(); });
-tuneBtn.addEventListener('click', randomTune);
-stopBtn.addEventListener('click', () => Player.stop());
+guideBtn.addEventListener('click', () => { Guide.message = ''; Guide.start(); });
+stopBtn.addEventListener('click', () => { Player.stop(); Guide.stop(); });
 syncRecUI();
+
+/* test hook (harmless in production) */
+if (typeof window !== 'undefined') window.MusicToolTest = { Guide, Player, REC, keyMap };
 
 /* ================= service worker ================= */
 if ('serviceWorker' in navigator){
